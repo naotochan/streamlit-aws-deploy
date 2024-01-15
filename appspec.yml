@@ -1,0 +1,11 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /home/ec2-user/streamlit-aws-deploy
+hooks:
+  BeforeInstall:
+    - location: scripts/stop_server.sh
+  AfterInstall:
+    - location: scripts/start_server.sh
+file_exists_behavior: OVERWRITE

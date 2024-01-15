@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: deploy pipeline for my-app
+
+Parameters:
+  AppName:
+    Type: String  # アプリケーション名
+  Branch:
+    Type: String  # デプロイのトリガーとするブランチ名
+  Owner:
+    Type: String  # リポジトリのオーナー名
+  Repo:
+    Type: String  # リポジトリ名
+  OAuthToken:
+    Type: String  # GitHubのDeveloper settingsから発行したアクセストークン
+    NoEcho: true
+
+Resources:
+  # S3::Bucketの定義。CodePipelineのSourceフェーズでGitHubからダウンロードしたソースコードを保持するために利用。
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  # CodeDeploy::Applicationの定義
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Ref AppName
+      ComputePlatform: Server
+
+  # CodeDeploy::DeploymentGroupの定義
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn: CodeDeployRole
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub ${CodeDeployApplication}-DeployGroup
+      DeploymentConfigName: CodeDeployDefault.AllAtOnce
+      ServiceRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${CodeDeployApplication}-CodeDeployRole
+      DeploymentStyle:
+        DeploymentType: IN_PLACE
+        DeploymentOption: WITHOUT_TRAFFIC_CONTROL
+      Ec2TagFilters:
+        - Type: VALUE_ONLY
+          Value: !Ref AppName  # デプロイ対象となるEC2インスタンスのタグ
+
+  # CodePipeline::Pipelineの定義。今回は最小構成のため、SourceフェーズとDeployフェーズの２段階のみ。
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${CodeDeployApplication}-Pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Location: !Ref ArtifactStoreBucket
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Branch: !Ref Branch
+                OAuthToken: !Ref OAuthToken
+                Owner: !Ref Owner
+                PollForSourceChanges: true
+                Repo: !Ref Repo
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Region: !Ref AWS::Region
+              Namespace: SourceVariables
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: 1
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Sub ${CodeDeployApplication}-DeployGroup
+              InputArtifacts:
+                - Name: SourceArtifact
+              Region: !Ref AWS::Region
+              Namespace: DeployVariables
+              RunOrder: 1
+
+  # CodePipeline用のロール
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                  - iam:PassRole
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: "*"
+
+  # CodeDeploy用のロール
+  CodeDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${CodeDeployApplication}-CodeDeployRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
